@@ -167,16 +167,21 @@
                 socket.emit('ssh_input', {ssh_id: ssh_id, input: data});
             });
 
-            socket.on('ssh_output', function(msg) {
-                if (msg.ssh_id === ssh_id) {
-                    term.write(msg.output);
-                }
-            });
+            socket.emit('join', {ssh_id: ssh_id});
 
             if (currentTab === null) {
                 selectTab(ssh_id);
             }
         }
+
+        socket.on('ssh_output', function(msg) {
+            var ssh_id = msg.ssh_id;
+            var output = msg.output;
+
+            if (terminals[ssh_id]) {
+                terminals[ssh_id].write(output);
+            }
+        });
 
         function selectTab(ssh_id) {
             if (currentTab) {
@@ -208,6 +213,8 @@
                     }
                 }
             });
+
+            socket.emit('leave', {ssh_id: ssh_id});
         }
     </script>
 </body>
