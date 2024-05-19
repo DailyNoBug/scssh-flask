@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>SSH Web Terminal</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm@4.15.0/lib/xterm.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@4.15.0/css/xterm.css">
+    <style>
+        body {
+            display: flex;
+            margin: 0;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+        #sidebar {
+            width: 250px;
+            background-color: #2c2f33;
+            color: white;
+            display: flex;
+            flex-direction: column;
+        }
+        #terminals {
+            flex-grow: 1;
+            background-color: #1e1e1e;
+            display: flex;
+            flex-direction: column;
+        }
+        .tab {
+            padding: 10px;
+            cursor: pointer;
+        }
+        .tab:hover {
+            background-color: #23272a;
+        }
+        .active-tab {
+            background-color: #23272a;
+        }
+        .close-btn {
+            float: right;
+            cursor: pointer;
+        }
+        #add-config {
+            margin-top: auto;
+            text-align: center;
+            padding: 10px;
+        }
+        #add-config button {
+            border: none;
+            background-color: #7289da;
+            color: white;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            font-size: 24px;
+        }
+        #config-form {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+        #config-form input {
+            margin-bottom: 10px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div id="tabs"></div>
+        <div id="add-config">
+            <button onclick="showConfigForm()">+</button>
+        </div>
+    </div>
+    <div id="terminals"></div>
+
+    <div id="config-form" style="display:none;">
+        <h2>Add SSH Configuration</h2>
+        <label>Host:</label><input id="host" type="text"><br>
+        <label>Port:</label><input id="port" type="number" value="22"><br>
+        <label>Username:</label><input id="username" type="text"><br>
+        <label>Password:</label><input id="password" type="password"><br>
+        <label>Public Key:</label><input id="pub_key" type="file"><br>
+        <button onclick="addSSHConfig()">Connect</button>
+        <button onclick="hideConfigForm()">Cancel</button>
+    </div>
+
+    <script>
+        var socket = io();
+        var terminals = {};
+        var currentTab = null;
+
+        function showConfigForm() {
+            document.getElementById('config-form').style.display = 'block';
+        }
+
+        function hideConfigForm() {
+            document.getElementById('config-form').style.display = 'none';
+        }
+
+        function addSSHConfig() {
+            var host = document.getElementById('host').value;
+            var port = document.getElementById('port').value;
+            var username = document.getElementById('username').value;
+            var password = document.getElementById('password').value;
+            var pub_key = document.getElementById('pub_key').files[0];
+
+            var data = {
+                host: host,
+                port: port,
+                username: username,
+                password: password
+            };
+
+            if (pub_key) {
+                var reader = new FileReader();
+                reader.onload = function(event) {
+                    data.pub_key = event.target.result;
+                    sendSSHConfig(data);
+                };
+                reader.readAsText(pub_key);
+            } else {
+                sendSSHConfig(data);
+            }
+        }
+
+        function sendSSHConfig(data) {
+            fetch('/add_ssh', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            }).then(response => response.json())
+            .then(data => {
+                addTab(data.ssh_id);
+                hideConfigForm();
+            });
+        }
+
+        function addTab(ssh_id) {
+            var tab = document.createElement('div');
+            tab.className = 'tab';
+            tab.innerHTML = ssh_id + ' <span class="close-btn" onclick="deleteTab(\'' + ssh_id + '\')">×</span>';
+            tab.onclick = function() {
+                selectTab(ssh_id);
+            };
+            document.getElementById('tabs').appendChild(tab);
+
+            var terminalDiv = document.createElement('div');
+            terminalDiv.id = ssh_id;
+            terminalDiv.style.display = 'none';
+            terminalDiv.style.flexGrow = '1';
+            document.getElementById('terminals').appendChild(terminalDiv);
+
+            var term = new Terminal();
+            term.open(terminalDiv);
+            terminals[ssh_id] = term;
+
+            term.onData(function(data) {
+                socket.emit('ssh_input', {ssh_id: ssh_id, input: data});
+            });
+
+            socket.on('ssh_output', function(msg) {
+                if (msg.ssh_id === ssh_id) {
+                    term.write(msg.output);
+                }
+            });
+
+            if (currentTab === null) {
+                selectTab(ssh_id);
+            }
+        }
+
+        function selectTab(ssh_id) {
+            if (currentTab) {
+                document.getElementById(currentTab).style.display = 'none';
+                document.querySelector('.tab.active-tab').classList.remove('active-tab');
+            }
+            document.getElementById(ssh_id).style.display = 'block';
+            document.querySelector('.tab[onclick="selectTab(\'' + ssh_id + '\')"]').classList.add('active-tab');
+            currentTab = ssh_id;
+        }
+
+        function deleteTab(ssh_id) {
+            fetch('/delete_ssh', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ssh_id: ssh_id})
+            }).then(response => response.json())
+            .then(data => {
+                document.getElementById(ssh_id).remove();
+                document.querySelector('.tab[onclick="selectTab(\'' + ssh_id + '\')"]').remove();
+                delete terminals[ssh_id];
+
+                if (currentTab === ssh_id) {
+                    currentTab = null;
+                    if (Object.keys(terminals).length > 0) {
+                        selectTab(Object.keys(terminals)[0]);
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
